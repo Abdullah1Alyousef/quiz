@@ -5,81 +5,57 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Clock, Users, Loader2 } from "lucide-react"
+import { ArrowLeft, Clock, Users, Loader2, AlertCircle } from "lucide-react"
 import { supabase } from "@/lib/supabase"
+import { DebugPanel } from "@/components/debug-panel"
 
 export default function QuizzesPage() {
   const [quizzes, setQuizzes] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [showDebug, setShowDebug] = useState(false)
 
   // Fetch quizzes from Supabase
   useEffect(() => {
     async function fetchQuizzes() {
       setLoading(true)
+      setError(null)
+
       try {
         console.log("Fetching quizzes from Supabase...")
 
-        // Get quizzes
-        const { data: quizzesData, error } = await supabase
-          .from("quizzes")
-          .select(`
-            id, 
-            title, 
-            description, 
-            difficulty, 
-            time_limit,
-            created_at
-          `)
-          .order("created_at", { ascending: false })
+        // Direct approach - get all quizzes
+        const { data, error } = await supabase.from("quizzes").select("*")
 
         if (error) {
-          console.error("Error fetching quizzes:", error)
           throw error
         }
 
-        console.log("Quizzes fetched:", quizzesData)
+        console.log("Raw quizzes data:", data)
 
-        // Get participant counts for each quiz
-        const { data: participantCounts, error: countError } = await supabase
-          .from("user_quiz_results")
-          .select("quiz_id, count(*)")
-          .group("quiz_id")
-
-        if (countError) {
-          console.error("Error fetching participant counts:", countError)
+        if (!data || data.length === 0) {
+          console.log("No quizzes found in the database")
+          setQuizzes([])
+          return
         }
 
-        console.log("Participant counts:", participantCounts)
+        // Transform the data to match the expected format
+        const formattedQuizzes = data.map((quiz) => ({
+          id: quiz.id,
+          title: quiz.title || "Untitled Quiz",
+          description: quiz.description || "No description provided",
+          difficulty: quiz.difficulty || "Medium",
+          timeLimit: String(quiz.time_limit || 10),
+          participants: 0, // We'll set this to 0 for now
+        }))
 
-        // Map participant counts to quizzes
-        const quizzesWithCounts = quizzesData.map((quiz) => {
-          const countData = participantCounts?.find((p) => p.quiz_id === quiz.id)
-          return {
-            ...quiz,
-            id: quiz.id, // Ensure ID is properly passed
-            title: quiz.title,
-            description: quiz.description || "No description provided",
-            difficulty: quiz.difficulty,
-            participants: countData ? Number.parseInt(countData.count) : 0,
-            timeLimit: quiz.time_limit.toString(),
-          }
-        })
+        console.log("Formatted quizzes:", formattedQuizzes)
+        setQuizzes(formattedQuizzes)
+      } catch (err) {
+        console.error("Error fetching quizzes:", err)
+        setError(err.message || "Failed to load quizzes")
 
-        console.log("Quizzes with counts:", quizzesWithCounts)
-        setQuizzes(quizzesWithCounts)
-      } catch (error) {
-        console.error("Error in fetchQuizzes:", error)
-        // If there's an error, use a sample quiz for testing
-        setQuizzes([
-          {
-            id: "test-quiz",
-            title: "Sample Quiz",
-            description: "This is a sample quiz for testing the frontend while developing the backend.",
-            difficulty: "Medium",
-            timeLimit: "10",
-            participants: 0,
-          },
-        ])
+        // Don't set sample quiz in production - show the error instead
       } finally {
         setLoading(false)
       }
@@ -131,13 +107,34 @@ export default function QuizzesPage() {
         <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-quiz-purple to-quiz-blue">
           Available Quizzes
         </h1>
-        <Link href="/">
-          <Button variant="ghost" className="gap-2 hover:bg-quiz-purple/10">
-            <ArrowLeft className="h-4 w-4" />
-            Back to Home
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setShowDebug(!showDebug)} className="text-xs">
+            {showDebug ? "Hide Debug" : "Show Debug"}
           </Button>
-        </Link>
+          <Link href="/">
+            <Button variant="ghost" className="gap-2 hover:bg-quiz-purple/10">
+              <ArrowLeft className="h-4 w-4" />
+              Back to Home
+            </Button>
+          </Link>
+        </div>
       </div>
+
+      {showDebug && <DebugPanel />}
+
+      {error && (
+        <Card className="mb-6 bg-red-50 border-red-200">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+              <div>
+                <h3 className="font-medium text-red-800">Error Loading Quizzes</h3>
+                <p className="text-red-600 text-sm">{error}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {quizzes.map((quiz, index) => (
@@ -175,7 +172,7 @@ export default function QuizzesPage() {
         ))}
       </div>
 
-      {quizzes.length === 0 && (
+      {quizzes.length === 0 && !error && (
         <div className="text-center py-16">
           <h2 className="text-2xl font-bold mb-2">No quizzes available</h2>
           <p className="text-muted-foreground mb-6">Check back later or visit the admin page to create quizzes.</p>
