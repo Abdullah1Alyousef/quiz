@@ -5,59 +5,86 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Clock, Users, Loader2, AlertCircle } from "lucide-react"
-import { supabase } from "@/lib/supabase"
-import { DebugPanel } from "@/components/debug-panel"
+import { ArrowLeft, Clock, Users, Loader2 } from "lucide-react"
+import { supabase, isSupabaseConfigured } from "@/lib/supabase"
+import { ConnectionError } from "@/components/connection-error"
 
 export default function QuizzesPage() {
   const [quizzes, setQuizzes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [showDebug, setShowDebug] = useState(false)
+  const [connectionTimeout, setConnectionTimeout] = useState(false)
 
-  // Fetch quizzes from Supabase
+  // Fetch quizzes from Supabase with timeout
   useEffect(() => {
+    // Check if Supabase is configured
+    if (!isSupabaseConfigured()) {
+      setError("Supabase is not properly configured. Check your environment variables.")
+      setLoading(false)
+      return
+    }
+
     async function fetchQuizzes() {
       setLoading(true)
       setError(null)
+      setConnectionTimeout(false)
+
+      // Set a timeout to prevent infinite loading
+      const timeoutId = setTimeout(() => {
+        setConnectionTimeout(true)
+        setLoading(false)
+      }, 10000) // 10 seconds timeout
 
       try {
-        console.log("Fetching quizzes from Supabase...")
+        console.log("Attempting to fetch quizzes from Supabase...")
 
-        // Direct approach - get all quizzes
-        const { data, error } = await supabase.from("quizzes").select("*")
+        // Simple query to test connection first
+        const { data: testData, error: testError } = await supabase.from("quizzes").select("count").single()
 
-        if (error) {
-          throw error
+        if (testError) {
+          console.error("Connection test failed:", testError)
+          throw new Error(`Connection test failed: ${testError.message}`)
         }
 
-        console.log("Raw quizzes data:", data)
+        console.log("Connection test successful, fetching quizzes...")
+
+        // Now fetch the actual quizzes
+        const { data, error } = await supabase.from("quizzes").select("*")
+
+        // Clear timeout since we got a response
+        clearTimeout(timeoutId)
+
+        if (error) {
+          throw new Error(`Failed to fetch quizzes: ${error.message}`)
+        }
+
+        console.log("Quizzes fetched successfully:", data)
 
         if (!data || data.length === 0) {
           console.log("No quizzes found in the database")
           setQuizzes([])
-          return
+        } else {
+          // Transform the data to match the expected format
+          const formattedQuizzes = data.map((quiz) => ({
+            id: quiz.id,
+            title: quiz.title || "Untitled Quiz",
+            description: quiz.description || "No description provided",
+            difficulty: quiz.difficulty || "Medium",
+            timeLimit: String(quiz.time_limit || 10),
+            participants: 0, // We'll set this to 0 for now
+          }))
+
+          console.log("Formatted quizzes:", formattedQuizzes)
+          setQuizzes(formattedQuizzes)
         }
-
-        // Transform the data to match the expected format
-        const formattedQuizzes = data.map((quiz) => ({
-          id: quiz.id,
-          title: quiz.title || "Untitled Quiz",
-          description: quiz.description || "No description provided",
-          difficulty: quiz.difficulty || "Medium",
-          timeLimit: String(quiz.time_limit || 10),
-          participants: 0, // We'll set this to 0 for now
-        }))
-
-        console.log("Formatted quizzes:", formattedQuizzes)
-        setQuizzes(formattedQuizzes)
       } catch (err) {
-        console.error("Error fetching quizzes:", err)
+        console.error("Error in fetchQuizzes:", err)
         setError(err.message || "Failed to load quizzes")
-
-        // Don't set sample quiz in production - show the error instead
+        clearTimeout(timeoutId)
       } finally {
-        setLoading(false)
+        if (!connectionTimeout) {
+          setLoading(false)
+        }
       }
     }
 
@@ -90,13 +117,33 @@ export default function QuizzesPage() {
     return colors[index % colors.length]
   }
 
+  // Show connection timeout message
+  if (connectionTimeout) {
+    return (
+      <div className="container mx-auto min-h-screen p-4 py-8 flex items-center justify-center">
+        <ConnectionError message="Connection to the database is taking too long. This might indicate a network issue or that the database is currently unavailable." />
+      </div>
+    )
+  }
+
+  // Show loading state
   if (loading) {
     return (
       <div className="container mx-auto min-h-screen p-4 py-8 flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p>Loading quizzes...</p>
+          <p className="text-sm text-muted-foreground mt-2">This should only take a moment...</p>
         </div>
+      </div>
+    )
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <div className="container mx-auto min-h-screen p-4 py-8 flex items-center justify-center">
+        <ConnectionError message={`Error loading quizzes: ${error}`} />
       </div>
     )
   }
@@ -107,34 +154,13 @@ export default function QuizzesPage() {
         <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-quiz-purple to-quiz-blue">
           Available Quizzes
         </h1>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowDebug(!showDebug)} className="text-xs">
-            {showDebug ? "Hide Debug" : "Show Debug"}
+        <Link href="/">
+          <Button variant="ghost" className="gap-2 hover:bg-quiz-purple/10">
+            <ArrowLeft className="h-4 w-4" />
+            Back to Home
           </Button>
-          <Link href="/">
-            <Button variant="ghost" className="gap-2 hover:bg-quiz-purple/10">
-              <ArrowLeft className="h-4 w-4" />
-              Back to Home
-            </Button>
-          </Link>
-        </div>
+        </Link>
       </div>
-
-      {showDebug && <DebugPanel />}
-
-      {error && (
-        <Card className="mb-6 bg-red-50 border-red-200">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
-              <div>
-                <h3 className="font-medium text-red-800">Error Loading Quizzes</h3>
-                <p className="text-red-600 text-sm">{error}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {quizzes.map((quiz, index) => (
@@ -172,7 +198,7 @@ export default function QuizzesPage() {
         ))}
       </div>
 
-      {quizzes.length === 0 && !error && (
+      {quizzes.length === 0 && (
         <div className="text-center py-16">
           <h2 className="text-2xl font-bold mb-2">No quizzes available</h2>
           <p className="text-muted-foreground mb-6">Check back later or visit the admin page to create quizzes.</p>

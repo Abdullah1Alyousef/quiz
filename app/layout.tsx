@@ -4,6 +4,7 @@ import { Inter } from "next/font/google"
 import { ThemeProvider } from "@/components/theme-provider"
 import { AuthProvider } from "@/components/auth-provider"
 import Header from "@/components/header"
+import { EnvChecker } from "@/components/env-checker"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -24,6 +25,9 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           <AuthProvider>
             <Header />
+            <div className="container mx-auto px-4">
+              <EnvChecker />
+            </div>
             {children}
           </AuthProvider>
         </ThemeProvider>
