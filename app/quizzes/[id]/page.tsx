@@ -191,6 +191,15 @@ export default function QuizPage({ params }) {
 
         // Update local user progress
         await updateUserProgress(id, finalScore)
+
+        // Increment participant count
+        await supabase
+          .rpc("increment_quiz_participants", {
+            quiz_uuid: id,
+          })
+          .then(({ error }) => {
+            if (error) console.error("Failed to update participant count:", error)
+          })
       } catch (error) {
         console.error("Error submitting quiz results:", error)
       }
