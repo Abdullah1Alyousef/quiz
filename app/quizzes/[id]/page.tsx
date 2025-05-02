@@ -6,11 +6,12 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Clock, AlertCircle } from "lucide-react"
+import { ArrowLeft, Clock, AlertCircle, Loader2 } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/components/auth-provider"
+import { supabase } from "@/lib/supabase"
 
 export default function QuizPage({ params }) {
   const router = useRouter()
@@ -25,30 +26,87 @@ export default function QuizPage({ params }) {
   const [quizCompleted, setQuizCompleted] = useState(false)
   const [score, setScore] = useState(0)
   const [timeLeft, setTimeLeft] = useState(0)
+  const [userAnswers, setUserAnswers] = useState([])
 
-  // Load quiz data
+  // Load quiz data from Supabase
   useEffect(() => {
-    const loadQuiz = () => {
-      const savedQuizzes = localStorage.getItem("adminQuizzes")
-      if (savedQuizzes) {
-        const allQuizzes = JSON.parse(savedQuizzes)
-        const foundQuiz = allQuizzes.find((q) => q.id === id)
+    async function fetchQuiz() {
+      setLoading(true)
+      try {
+        // Get quiz details
+        const { data: quizData, error: quizError } = await supabase
+          .from("quizzes")
+          .select("id, title, description, difficulty, time_limit")
+          .eq("id", id)
+          .single()
 
-        if (foundQuiz) {
-          setQuiz(foundQuiz)
-          setTimeLeft(Number.parseInt(foundQuiz.timeLimit) * 60) // Convert minutes to seconds
-        } else {
-          // If no quiz found with this ID, redirect to quizzes page
-          router.push("/quizzes")
+        if (quizError) {
+          throw quizError
         }
-      } else {
-        // If no quizzes in localStorage, redirect to quizzes page
+
+        // Get questions
+        const { data: questionsData, error: questionsError } = await supabase
+          .from("questions")
+          .select("id, text, order_num")
+          .eq("quiz_id", id)
+          .order("order_num")
+
+        if (questionsError) {
+          throw questionsError
+        }
+
+        // Get options for each question
+        const questions = await Promise.all(
+          questionsData.map(async (question) => {
+            const { data: optionsData, error: optionsError } = await supabase
+              .from("options")
+              .select("id, text, is_correct, option_key")
+              .eq("question_id", question.id)
+              .order("option_key")
+
+            if (optionsError) {
+              throw optionsError
+            }
+
+            // Format options and find correct option
+            const options = optionsData.map((opt) => ({
+              id: opt.option_key,
+              text: opt.text,
+            }))
+
+            const correctOption = optionsData.find((opt) => opt.is_correct)?.option_key || ""
+
+            return {
+              id: question.id,
+              text: question.text,
+              options,
+              correctOption,
+            }
+          }),
+        )
+
+        // Format quiz data
+        const formattedQuiz = {
+          id: quizData.id,
+          title: quizData.title,
+          description: quizData.description,
+          difficulty: quizData.difficulty,
+          timeLimit: quizData.time_limit.toString(),
+          questions,
+        }
+
+        setQuiz(formattedQuiz)
+        setTimeLeft(quizData.time_limit * 60) // Convert minutes to seconds
+        setAnswers(new Array(questions.length).fill(""))
+      } catch (error) {
+        console.error("Error fetching quiz:", error)
         router.push("/quizzes")
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
 
-    loadQuiz()
+    fetchQuiz()
   }, [id, router])
 
   // Timer countdown
@@ -81,6 +139,19 @@ export default function QuizPage({ params }) {
     newAnswers[currentQuestionIndex] = selectedOption
     setAnswers(newAnswers)
 
+    // Save user answer for submission
+    const currentQuestion = quiz.questions[currentQuestionIndex]
+    const selectedOptionObj = currentQuestion.options.find((opt) => opt.id === selectedOption)
+
+    setUserAnswers((prev) => [
+      ...prev,
+      {
+        question_id: currentQuestion.id,
+        selected_option_id: selectedOptionObj ? selectedOption : null,
+        is_correct: selectedOption === currentQuestion.correctOption,
+      },
+    ])
+
     // Move to next question or end quiz
     if (currentQuestionIndex < quiz.questions.length - 1) {
       setCurrentQuestionIndex((prev) => prev + 1)
@@ -91,7 +162,7 @@ export default function QuizPage({ params }) {
   }
 
   // Handle quiz end
-  const handleQuizEnd = () => {
+  const handleQuizEnd = async () => {
     // Calculate score
     let correctAnswers = 0
     quiz.questions.forEach((question, index) => {
@@ -104,44 +175,26 @@ export default function QuizPage({ params }) {
     setScore(finalScore)
     setQuizCompleted(true)
 
-    // Update user progress if logged in
+    // Submit results to Supabase
     if (user) {
-      updateUserProgress(id, finalScore)
+      try {
+        // Calculate time taken
+        const timeTaken = Number.parseInt(quiz.timeLimit) * 60 - timeLeft
+
+        // Submit quiz results using the stored procedure
+        await supabase.rpc("submit_quiz_results", {
+          p_quiz_id: id,
+          p_score: finalScore,
+          p_time_taken: timeTaken,
+          p_answers: userAnswers,
+        })
+
+        // Update local user progress
+        await updateUserProgress(id, finalScore)
+      } catch (error) {
+        console.error("Error submitting quiz results:", error)
+      }
     }
-
-    // Save score to leaderboard
-    const leaderboardData = JSON.parse(localStorage.getItem("quizLeaderboards") || "{}")
-    const quizLeaderboard = leaderboardData[id] || []
-
-    // Add score to leaderboard with user info if logged in
-    if (user) {
-      quizLeaderboard.push({
-        name: user.name,
-        score: finalScore,
-        date: new Date().toISOString(),
-        avatar: user.avatar,
-        userId: user.id,
-      })
-    } else {
-      // Generate a random name for anonymous users
-      const names = ["Alex", "Sam", "Jamie", "Taylor", "Jordan", "Casey", "Riley", "Morgan", "Quinn", "Avery"]
-      const surnames = ["Johnson", "Smith", "Brown", "Wilson", "Davis", "Miller", "Martin", "Lee", "Harris", "White"]
-      const randomName = `${names[Math.floor(Math.random() * names.length)]} ${surnames[Math.floor(Math.random() * surnames.length)]}`
-
-      quizLeaderboard.push({
-        name: randomName,
-        score: finalScore,
-        date: new Date().toISOString(),
-        avatar: "/placeholder.svg?height=40&width=40",
-      })
-    }
-
-    // Sort by score (highest first)
-    quizLeaderboard.sort((a, b) => b.score - a.score)
-
-    // Update leaderboard in localStorage
-    leaderboardData[id] = quizLeaderboard
-    localStorage.setItem("quizLeaderboards", JSON.stringify(leaderboardData))
   }
 
   // Format time remaining
@@ -168,7 +221,10 @@ export default function QuizPage({ params }) {
   if (loading) {
     return (
       <div className="container mx-auto min-h-screen p-4 py-8 flex items-center justify-center">
-        <p>Loading quiz...</p>
+        <div className="flex flex-col items-center gap-2">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p>Loading quiz...</p>
+        </div>
       </div>
     )
   }

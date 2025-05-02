@@ -5,74 +5,76 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Clock, Users } from "lucide-react"
-
-// Default quizzes to show if no admin quizzes exist
-const defaultQuizzes = [
-  {
-    id: "default1",
-    title: "General Knowledge",
-    description: "Test your knowledge on various topics from history to science.",
-    difficulty: "Medium",
-    timeLimit: "10",
-    participants: 1245,
-  },
-  {
-    id: "default2",
-    title: "Science Quiz",
-    description: "Challenge yourself with questions about physics, chemistry, and biology.",
-    difficulty: "Hard",
-    timeLimit: "15",
-    participants: 876,
-  },
-  {
-    id: "default3",
-    title: "Pop Culture",
-    description: "How well do you know movies, music, and celebrities?",
-    difficulty: "Easy",
-    timeLimit: "8",
-    participants: 2134,
-  },
-  {
-    id: "default4",
-    title: "History Masters",
-    description: "Travel through time with questions about world history.",
-    difficulty: "Medium",
-    timeLimit: "12",
-    participants: 654,
-  },
-]
+import { ArrowLeft, Clock, Users, Loader2 } from "lucide-react"
+import { supabase } from "@/lib/supabase"
 
 export default function QuizzesPage() {
-  const [quizzes, setQuizzes] = useState(defaultQuizzes)
+  const [quizzes, setQuizzes] = useState([])
+  const [loading, setLoading] = useState(true)
 
-  // Load quizzes from localStorage on component mount
+  // Fetch quizzes from Supabase
   useEffect(() => {
-    const loadQuizzes = () => {
-      const savedQuizzes = localStorage.getItem("adminQuizzes")
-      if (savedQuizzes) {
-        const adminQuizzes = JSON.parse(savedQuizzes)
+    async function fetchQuizzes() {
+      setLoading(true)
+      try {
+        // Get quizzes
+        const { data: quizzesData, error } = await supabase
+          .from("quizzes")
+          .select(`
+            id, 
+            title, 
+            description, 
+            difficulty, 
+            time_limit,
+            created_at
+          `)
+          .order("created_at", { ascending: false })
 
-        // Only use admin quizzes if there are any
-        if (adminQuizzes.length > 0) {
-          // Add random participant count to admin quizzes
-          const enhancedQuizzes = adminQuizzes.map((quiz) => ({
-            ...quiz,
-            participants: Math.floor(Math.random() * 2000) + 100,
-          }))
-          setQuizzes(enhancedQuizzes)
+        if (error) {
+          throw error
         }
+
+        // Get participant counts for each quiz
+        const { data: participantCounts, error: countError } = await supabase
+          .from("user_quiz_results")
+          .select("quiz_id, count")
+          .select("quiz_id, count(*)", { count: "exact" })
+          .group("quiz_id")
+
+        if (countError) {
+          console.error("Error fetching participant counts:", countError)
+        }
+
+        // Map participant counts to quizzes
+        const quizzesWithCounts = quizzesData.map((quiz) => {
+          const countData = participantCounts?.find((p) => p.quiz_id === quiz.id)
+          return {
+            ...quiz,
+            participants: countData ? Number.parseInt(countData.count) : 0,
+            timeLimit: quiz.time_limit.toString(),
+          }
+        })
+
+        setQuizzes(quizzesWithCounts)
+      } catch (error) {
+        console.error("Error fetching quizzes:", error)
+        // If there's an error, use a sample quiz for testing
+        setQuizzes([
+          {
+            id: "test-quiz",
+            title: "Sample Quiz",
+            description: "This is a sample quiz for testing the frontend while developing the backend.",
+            difficulty: "Medium",
+            timeLimit: "10",
+            participants: 0,
+          },
+        ])
+      } finally {
+        setLoading(false)
       }
     }
 
-    loadQuizzes()
-
-    // Add event listener to refresh when localStorage changes
-    window.addEventListener("storage", loadQuizzes)
-
-    return () => {
-      window.removeEventListener("storage", loadQuizzes)
-    }
+    fetchQuizzes()
   }, [])
 
   // Get difficulty badge variant
@@ -99,6 +101,17 @@ export default function QuizzesPage() {
       "from-quiz-blue/10 to-quiz-teal/10 border-quiz-blue/20",
     ]
     return colors[index % colors.length]
+  }
+
+  if (loading) {
+    return (
+      <div className="container mx-auto min-h-screen p-4 py-8 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-2">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p>Loading quizzes...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -136,7 +149,7 @@ export default function QuizzesPage() {
                 </div>
                 <div className="flex items-center gap-1">
                   <Users className="h-4 w-4" />
-                  <span>{quiz.participants.toLocaleString()} participants</span>
+                  <span>{quiz.participants || 0} participants</span>
                 </div>
               </div>
             </CardContent>

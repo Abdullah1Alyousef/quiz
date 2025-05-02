@@ -9,9 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Plus, Trash2, Save, ArrowLeft, ArrowRight, Check } from "lucide-react"
+import { Plus, Trash2, Save, ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { useAuth } from "@/components/auth-provider"
+import { supabase } from "@/lib/supabase"
+import { useToast } from "@/hooks/use-toast"
 
 // Default empty question template
 const emptyQuestion = {
@@ -27,6 +30,10 @@ const emptyQuestion = {
 }
 
 export default function QuizCreator({ existingQuiz = null, onComplete }) {
+  const { user } = useAuth()
+  const { toast } = useToast()
+  const [isSaving, setIsSaving] = useState(false)
+
   // Quiz details state
   const [quizDetails, setQuizDetails] = useState({
     id: Date.now().toString(),
@@ -89,7 +96,11 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
       !currentQuestion.correctOption ||
       currentQuestion.options.some((option) => !option.text)
     ) {
-      alert("Please fill in all fields for the question and options, and select a correct answer.")
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all fields for the question and options, and select a correct answer.",
+        variant: "destructive",
+      })
       return
     }
 
@@ -110,6 +121,11 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
     const nextId = (updatedQuestions.length + 1).toString()
     setCurrentQuestion({ ...emptyQuestion, id: nextId })
     setCurrentQuestionIndex(updatedQuestions.length)
+
+    toast({
+      title: "Question Saved",
+      description: "Your question has been saved successfully.",
+    })
   }
 
   // Load a question for editing
@@ -133,37 +149,88 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
         setCurrentQuestion({ ...emptyQuestion, id: "1" })
       }
     }
+
+    toast({
+      title: "Question Deleted",
+      description: "The question has been removed from this quiz.",
+    })
   }
 
-  // Save the entire quiz
-  const saveQuiz = () => {
+  // Save the entire quiz to Supabase
+  const saveQuiz = async () => {
     // Validate quiz details
     if (!quizDetails.title || !quizDetails.description || quizDetails.questions.length === 0) {
-      alert("Please fill in all quiz details and add at least one question.")
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all quiz details and add at least one question.",
+        variant: "destructive",
+      })
       return
     }
 
-    // In a real app, this would save to a database
-    // For now, we'll just log it and store in localStorage
-    console.log("Saving quiz:", quizDetails)
-
-    // Get existing quizzes from localStorage
-    const existingQuizzesJSON = localStorage.getItem("adminQuizzes")
-    const existingQuizzes = existingQuizzesJSON ? JSON.parse(existingQuizzesJSON) : []
-
-    // Update or add the quiz
-    const quizIndex = existingQuizzes.findIndex((q) => q.id === quizDetails.id)
-    if (quizIndex >= 0) {
-      existingQuizzes[quizIndex] = quizDetails
-    } else {
-      existingQuizzes.push(quizDetails)
+    if (!user) {
+      toast({
+        title: "Authentication Required",
+        description: "You must be logged in to create or edit quizzes.",
+        variant: "destructive",
+      })
+      return
     }
 
-    // Save back to localStorage
-    localStorage.setItem("adminQuizzes", JSON.stringify(existingQuizzes))
+    setIsSaving(true)
 
-    // Notify parent component
-    onComplete()
+    try {
+      // Format questions for the create_quiz function
+      const formattedQuestions = quizDetails.questions.map((q, index) => ({
+        text: q.text,
+        order: index + 1,
+        options: q.options.map((opt) => ({
+          text: opt.text,
+          is_correct: opt.id === q.correctOption,
+          key: opt.id,
+        })),
+      }))
+
+      if (existingQuiz) {
+        // Update existing quiz
+        // First, delete the old quiz and its questions/options
+        const { error: deleteError } = await supabase.from("quizzes").delete().eq("id", existingQuiz.id)
+
+        if (deleteError) {
+          throw new Error(`Error deleting existing quiz: ${deleteError.message}`)
+        }
+      }
+
+      // Create new quiz using the stored procedure
+      const { data, error } = await supabase.rpc("create_quiz", {
+        p_title: quizDetails.title,
+        p_description: quizDetails.description,
+        p_difficulty: quizDetails.difficulty,
+        p_time_limit: Number.parseInt(quizDetails.timeLimit),
+        p_questions: formattedQuestions,
+      })
+
+      if (error) {
+        throw new Error(`Error creating quiz: ${error.message}`)
+      }
+
+      toast({
+        title: "Success!",
+        description: existingQuiz ? "Quiz updated successfully." : "Quiz created successfully.",
+      })
+
+      // Notify parent component
+      onComplete()
+    } catch (error) {
+      console.error("Error saving quiz:", error)
+      toast({
+        title: "Error",
+        description: error.message || "Failed to save quiz. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -233,7 +300,10 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
           </div>
 
           <div className="flex justify-end space-x-2">
-            <Button onClick={() => setActiveTab("questions")} className="gap-2">
+            <Button
+              onClick={() => setActiveTab("questions")}
+              className="gap-2 bg-gradient-to-r from-quiz-purple to-quiz-blue hover:opacity-90"
+            >
               Continue to Questions
               <ArrowRight className="h-4 w-4" />
             </Button>
@@ -243,7 +313,7 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
         <TabsContent value="questions" className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4">
             {/* Questions sidebar */}
-            <Card className="h-[500px] flex flex-col">
+            <Card className="h-[500px] flex flex-col bg-white/50 backdrop-blur-sm">
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Questions</CardTitle>
               </CardHeader>
@@ -255,7 +325,9 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
                         <div
                           key={question.id}
                           className={`p-3 rounded-md cursor-pointer flex justify-between items-center ${
-                            currentQuestionIndex === index ? "bg-muted" : "hover:bg-muted/50"
+                            currentQuestionIndex === index
+                              ? "bg-gradient-to-r from-quiz-purple/20 to-quiz-blue/20"
+                              : "hover:bg-muted/50"
                           }`}
                           onClick={() => editQuestion(index)}
                         >
@@ -283,7 +355,7 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
               <CardFooter className="border-t pt-3">
                 <Button
                   variant="outline"
-                  className="w-full gap-2"
+                  className="w-full gap-2 bg-gradient-to-r from-quiz-purple/10 to-quiz-blue/10 border-quiz-purple/20 hover:bg-quiz-purple/20"
                   onClick={() => {
                     setCurrentQuestion({ ...emptyQuestion, id: (quizDetails.questions.length + 1).toString() })
                     setCurrentQuestionIndex(quizDetails.questions.length)
@@ -296,7 +368,7 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
             </Card>
 
             {/* Question editor */}
-            <Card>
+            <Card className="bg-white/50 backdrop-blur-sm">
               <CardHeader>
                 <CardTitle className="text-lg">
                   {currentQuestionIndex < quizDetails.questions.length
@@ -356,7 +428,10 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
                   <ArrowLeft className="h-4 w-4 mr-2" />
                   Back to Details
                 </Button>
-                <Button onClick={saveQuestion} className="gap-2">
+                <Button
+                  onClick={saveQuestion}
+                  className="gap-2 bg-gradient-to-r from-quiz-purple to-quiz-blue hover:opacity-90"
+                >
                   <Save className="h-4 w-4" />
                   Save Question
                 </Button>
@@ -365,9 +440,22 @@ export default function QuizCreator({ existingQuiz = null, onComplete }) {
           </div>
 
           <div className="flex justify-end space-x-2 pt-4">
-            <Button onClick={saveQuiz} className="gap-2">
-              <Check className="h-4 w-4" />
-              {existingQuiz ? "Update Quiz" : "Create Quiz"}
+            <Button
+              onClick={saveQuiz}
+              disabled={isSaving}
+              className="gap-2 bg-gradient-to-r from-quiz-purple to-quiz-blue hover:opacity-90"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  {existingQuiz ? "Updating Quiz..." : "Creating Quiz..."}
+                </>
+              ) : (
+                <>
+                  <Check className="h-4 w-4" />
+                  {existingQuiz ? "Update Quiz" : "Create Quiz"}
+                </>
+              )}
             </Button>
           </div>
         </TabsContent>

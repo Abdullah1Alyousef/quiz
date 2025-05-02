@@ -1,8 +1,9 @@
 "use client"
 
 import type React from "react"
-
 import { createContext, useContext, useState, useEffect } from "react"
+import { supabase } from "@/lib/supabase"
+import type { Session } from "@supabase/supabase-js"
 
 // Define user type
 export type User = {
@@ -24,8 +25,8 @@ type AuthContextType = {
   isLoading: boolean
   login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; message?: string }>
-  logout: () => void
-  updateUserProgress: (quizId: string, score: number) => void
+  logout: () => Promise<void>
+  updateUserProgress: (quizId: string, score: number) => Promise<void>
 }
 
 // Create auth context
@@ -36,141 +37,198 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  // Load user from localStorage on mount
+  // Load user from Supabase session on mount
   useEffect(() => {
-    const loadUser = () => {
-      const storedUser = localStorage.getItem("currentUser")
-      if (storedUser) {
-        setUser(JSON.parse(storedUser))
+    const loadUser = async () => {
+      setIsLoading(true)
+
+      // Get current session
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (session) {
+        await handleSessionChange(session)
       }
+
       setIsLoading(false)
+
+      // Listen for auth changes
+      const {
+        data: { subscription },
+      } = await supabase.auth.onAuthStateChange(async (_event, session) => {
+        if (session) {
+          await handleSessionChange(session)
+        } else {
+          setUser(null)
+        }
+      })
+
+      return () => {
+        subscription.unsubscribe()
+      }
     }
 
     loadUser()
   }, [])
 
+  // Handle session change
+  const handleSessionChange = async (session: Session) => {
+    const supabaseUser = session.user
+
+    if (!supabaseUser) {
+      setUser(null)
+      return
+    }
+
+    // Get user profile from database
+    const { data: profile, error } = await supabase.from("users").select("*").eq("id", supabaseUser.id).single()
+
+    if (error || !profile) {
+      console.error("Error fetching user profile:", error)
+      return
+    }
+
+    // Get user's completed quizzes
+    const { data: quizResults } = await supabase
+      .from("user_quiz_results")
+      .select("quiz_id, score, completed_at")
+      .eq("user_id", supabaseUser.id)
+
+    const completedQuizzes =
+      quizResults?.map((result) => ({
+        quizId: result.quiz_id,
+        score: result.score,
+        completedAt: result.completed_at,
+      })) || []
+
+    // Set user in state
+    setUser({
+      id: profile.id,
+      name: profile.name,
+      email: profile.email,
+      avatar: profile.avatar_url || undefined,
+      createdAt: profile.created_at,
+      completedQuizzes,
+    })
+  }
+
   // Login function
   const login = async (email: string, password: string) => {
-    // In a real app, this would make an API call
-    // For this demo, we'll check localStorage
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
 
-    const usersJSON = localStorage.getItem("users")
-    const users = usersJSON ? JSON.parse(usersJSON) : []
+      if (error) {
+        return { success: false, message: error.message }
+      }
 
-    const foundUser = users.find((u: any) => u.email === email)
-
-    if (!foundUser) {
-      return { success: false, message: "User not found" }
+      return { success: true }
+    } catch (error) {
+      console.error("Login error:", error)
+      return { success: false, message: "An unexpected error occurred" }
     }
-
-    // In a real app, you would hash passwords and not store them in plain text
-    if (foundUser.password !== password) {
-      return { success: false, message: "Incorrect password" }
-    }
-
-    // Remove password before storing in state
-    const { password: _, ...userWithoutPassword } = foundUser
-
-    // Set user in state and localStorage
-    setUser(userWithoutPassword)
-    localStorage.setItem("currentUser", JSON.stringify(userWithoutPassword))
-
-    return { success: true }
   }
 
   // Register function
   const register = async (name: string, email: string, password: string) => {
-    // In a real app, this would make an API call
-    // For this demo, we'll store in localStorage
+    try {
+      // Create auth user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name,
+          },
+        },
+      })
 
-    const usersJSON = localStorage.getItem("users")
-    const users = usersJSON ? JSON.parse(usersJSON) : []
+      if (authError) {
+        return { success: false, message: authError.message }
+      }
 
-    // Check if email already exists
-    if (users.some((u: any) => u.email === email)) {
-      return { success: false, message: "Email already in use" }
+      if (!authData.user) {
+        return { success: false, message: "Failed to create user" }
+      }
+
+      // Create user profile
+      const { error: profileError } = await supabase.from("users").insert({
+        id: authData.user.id,
+        name,
+        email,
+        avatar_url: `/placeholder.svg?height=40&width=40&text=${name.charAt(0)}`,
+      })
+
+      if (profileError) {
+        console.error("Error creating user profile:", profileError)
+        return { success: false, message: "Failed to create user profile" }
+      }
+
+      return { success: true }
+    } catch (error) {
+      console.error("Registration error:", error)
+      return { success: false, message: "An unexpected error occurred" }
     }
-
-    // Create new user
-    const newUser = {
-      id: Date.now().toString(),
-      name,
-      email,
-      password, // In a real app, you would hash this
-      avatar: `/placeholder.svg?height=40&width=40&text=${name.charAt(0)}`,
-      createdAt: new Date().toISOString(),
-      completedQuizzes: [],
-    }
-
-    // Add to users array
-    users.push(newUser)
-    localStorage.setItem("users", JSON.stringify(users))
-
-    // Remove password before storing in state
-    const { password: _, ...userWithoutPassword } = newUser
-
-    // Set user in state and localStorage
-    setUser(userWithoutPassword)
-    localStorage.setItem("currentUser", JSON.stringify(userWithoutPassword))
-
-    return { success: true }
   }
 
   // Logout function
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut()
     setUser(null)
-    localStorage.removeItem("currentUser")
   }
 
   // Update user progress
-  const updateUserProgress = (quizId: string, score: number) => {
+  const updateUserProgress = async (quizId: string, score: number) => {
     if (!user) return
 
-    // Create updated user object
-    const updatedUser = { ...user }
+    try {
+      // Insert quiz result
+      const { data, error } = await supabase
+        .from("user_quiz_results")
+        .insert({
+          user_id: user.id,
+          quiz_id: quizId,
+          score,
+          time_taken: null, // We could track this in the future
+        })
+        .select()
 
-    // Initialize completedQuizzes array if it doesn't exist
-    if (!updatedUser.completedQuizzes) {
-      updatedUser.completedQuizzes = []
-    }
+      if (error) {
+        console.error("Error updating user progress:", error)
+        return
+      }
 
-    // Add or update quiz completion
-    const existingQuizIndex = updatedUser.completedQuizzes.findIndex((q) => q.quizId === quizId)
+      // Update local user state
+      const updatedQuizzes = [...(user.completedQuizzes || [])]
+      const existingQuizIndex = updatedQuizzes.findIndex((q) => q.quizId === quizId)
 
-    if (existingQuizIndex >= 0) {
-      // Update existing entry if score is better
-      if (score > updatedUser.completedQuizzes[existingQuizIndex].score) {
-        updatedUser.completedQuizzes[existingQuizIndex] = {
+      if (existingQuizIndex >= 0) {
+        // Update existing entry if score is better
+        if (score > updatedQuizzes[existingQuizIndex].score) {
+          updatedQuizzes[existingQuizIndex] = {
+            quizId,
+            score,
+            completedAt: new Date().toISOString(),
+          }
+        }
+      } else {
+        // Add new entry
+        updatedQuizzes.push({
           quizId,
           score,
           completedAt: new Date().toISOString(),
-        }
+        })
       }
-    } else {
-      // Add new entry
-      updatedUser.completedQuizzes.push({
-        quizId,
-        score,
-        completedAt: new Date().toISOString(),
+
+      setUser({
+        ...user,
+        completedQuizzes: updatedQuizzes,
       })
-    }
-
-    // Update user in state and localStorage
-    setUser(updatedUser)
-    localStorage.setItem("currentUser", JSON.stringify(updatedUser))
-
-    // Also update in users array
-    const usersJSON = localStorage.getItem("users")
-    if (usersJSON) {
-      const users = JSON.parse(usersJSON)
-      const userIndex = users.findIndex((u: any) => u.id === user.id)
-
-      if (userIndex >= 0) {
-        // Keep the password when updating the users array
-        const password = users[userIndex].password
-        users[userIndex] = { ...updatedUser, password }
-        localStorage.setItem("users", JSON.stringify(users))
-      }
+    } catch (error) {
+      console.error("Error in updateUserProgress:", error)
     }
   }
 
