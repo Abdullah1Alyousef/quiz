@@ -17,6 +17,8 @@ export default function QuizzesPage() {
     async function fetchQuizzes() {
       setLoading(true)
       try {
+        console.log("Fetching quizzes from Supabase...")
+
         // Get quizzes
         const { data: quizzesData, error } = await supabase
           .from("quizzes")
@@ -31,33 +33,42 @@ export default function QuizzesPage() {
           .order("created_at", { ascending: false })
 
         if (error) {
+          console.error("Error fetching quizzes:", error)
           throw error
         }
+
+        console.log("Quizzes fetched:", quizzesData)
 
         // Get participant counts for each quiz
         const { data: participantCounts, error: countError } = await supabase
           .from("user_quiz_results")
-          .select("quiz_id, count")
-          .select("quiz_id, count(*)", { count: "exact" })
+          .select("quiz_id, count(*)")
           .group("quiz_id")
 
         if (countError) {
           console.error("Error fetching participant counts:", countError)
         }
 
+        console.log("Participant counts:", participantCounts)
+
         // Map participant counts to quizzes
         const quizzesWithCounts = quizzesData.map((quiz) => {
           const countData = participantCounts?.find((p) => p.quiz_id === quiz.id)
           return {
             ...quiz,
+            id: quiz.id, // Ensure ID is properly passed
+            title: quiz.title,
+            description: quiz.description || "No description provided",
+            difficulty: quiz.difficulty,
             participants: countData ? Number.parseInt(countData.count) : 0,
             timeLimit: quiz.time_limit.toString(),
           }
         })
 
+        console.log("Quizzes with counts:", quizzesWithCounts)
         setQuizzes(quizzesWithCounts)
       } catch (error) {
-        console.error("Error fetching quizzes:", error)
+        console.error("Error in fetchQuizzes:", error)
         // If there's an error, use a sample quiz for testing
         setQuizzes([
           {
