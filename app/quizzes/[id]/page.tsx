@@ -175,9 +175,20 @@ export default function QuizPage({ params }) {
     setScore(finalScore)
     setQuizCompleted(true)
 
-    // Submit results to Supabase
-    if (user) {
-      try {
+    try {
+      // Increment participant count using our new function
+      const { error: incrementError } = await supabase.rpc("increment_quiz_participants", {
+        quiz_uuid: id,
+      })
+
+      if (incrementError) {
+        console.error("Error incrementing participant count:", incrementError)
+      } else {
+        console.log("Successfully incremented participant count")
+      }
+
+      // Submit results to Supabase if user is logged in
+      if (user) {
         // Calculate time taken
         const timeTaken = Number.parseInt(quiz.timeLimit) * 60 - timeLeft
 
@@ -191,18 +202,9 @@ export default function QuizPage({ params }) {
 
         // Update local user progress
         await updateUserProgress(id, finalScore)
-
-        // Increment participant count
-        await supabase
-          .rpc("increment_quiz_participants", {
-            quiz_uuid: id,
-          })
-          .then(({ error }) => {
-            if (error) console.error("Failed to update participant count:", error)
-          })
-      } catch (error) {
-        console.error("Error submitting quiz results:", error)
       }
+    } catch (error) {
+      console.error("Error submitting quiz results:", error)
     }
   }
 
